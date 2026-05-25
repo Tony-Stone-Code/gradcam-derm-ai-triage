@@ -29,10 +29,20 @@ st.markdown("""
 @st.cache_resource
 def load_engine():
     engine = InferenceEngine(models_dir="models")
-    avail, has_rf = engine.load_models()
+    avail, has_rf = engine.get_available_models()
     return engine, avail, has_rf
 
 engine, available_models, has_rf = load_engine()
+
+# OOD Rejection Thresholds
+CONFIDENCE_THRESHOLD = 0.50  # Minimum top-class probability
+ENTROPY_THRESHOLD = 1.6      # Maximum allowed entropy (uniform over 7 classes = 1.946)
+
+def is_valid_prediction(probs):
+    """Check if the prediction looks like a genuine skin lesion or random noise."""
+    max_conf = np.max(probs)
+    entropy = -np.sum(probs * np.log(probs + 1e-10))
+    return max_conf >= CONFIDENCE_THRESHOLD and entropy <= ENTROPY_THRESHOLD, max_conf, entropy
 
 # Sidebar: Navigation & Author Info
 with st.sidebar:
@@ -158,57 +168,73 @@ elif page == "Diagnostic Tool":
                         probs = engine.predict_stacking(image)
                         xai_model = engine._get_or_load_model(available_models[0])
                     
-                    # 2. XAI Logic (Grad-CAM)
-                    processed_img, raw_array = engine.preprocess_image(image, available_models[0])
-                    heatmap = make_gradcam_heatmap(processed_img, xai_model)
-                    overlay = overlay_heatmap(raw_array, heatmap)
+                    # 2. OOD Rejection Gate
+                    is_valid, max_conf, entropy = is_valid_prediction(probs)
                     
-                    # Results UI (Tabs)
-                    tab_diag, tab_prob, tab_xai, tab_impact = st.tabs(["Diagnosis", "Probabilities", "Explainability (Grad-CAM)", "Project Impact"])
-                    
-                    with tab_diag:
-                        pred_idx = np.argmax(probs)
-                        pred_class = CLASSES[pred_idx].upper()
-                        confidence = probs[pred_idx] * 100
+                    if not is_valid:
+                        st.error("**Image Rejected: Not a Valid Dermatoscopic Skin Lesion**")
+                        st.markdown(f"""
+                        The uploaded image does not appear to contain a recognizable skin lesion. 
+                        The model's prediction confidence ({max_conf*100:.1f}%) is too low and/or the probability 
+                        distribution is too uniform (entropy: {entropy:.2f}) to produce a reliable diagnosis.
                         
-                        st.markdown(f"### Primary Diagnosis: **{pred_class}**")
-                        st.progress(int(confidence))
-                        st.markdown(f"**Confidence**: {confidence:.2f}%")
-                        
-                        if confidence < 75.0:
-                            st.warning("Low confidence prediction. Clinical correlation is strongly advised.")
-                            
-                    with tab_prob:
-                        df_probs = pd.DataFrame({'Class': [c.upper() for c in CLASSES], 'Probability': probs * 100})
-                        fig = px.bar(df_probs, x='Class', y='Probability', 
-                                     title="Class Probability Distribution",
-                                     labels={'Probability': 'Confidence (%)'},
-                                     color='Probability', color_continuous_scale='Blues')
-                        st.plotly_chart(fig, use_container_width=True)
-                        
-                    with tab_xai:
-                        st.markdown("### Gradient-weighted Class Activation Mapping (Grad-CAM)")
-                        st.markdown("The heatmap highlights the specific pixel regions the Convolutional Neural Network focused on to make its prediction. Red indicates high activation.")
-                        st.image(overlay, caption=f"Grad-CAM overlay", width=400)
-                        
-                    with tab_impact:
-                        st.markdown("### Project Context and Clinical Impact")
-                        st.markdown("""
-                        **The Problem Statement**
-                        Skin cancer is highly treatable if detected early, but dermatological expertise is not universally accessible. Furthermore, visual diagnosis of lesions like Melanoma vs. Atypical Nevi is highly complex, even for trained specialists.
-                        
-                        **The X-Skin Solution**
-                        This project utilizes advanced Deep Learning architectures to provide an automated, highly accurate "second opinion". By deploying advanced Ensemble Methods, the system drastically reduces the false-negative rate associated with single-model architectures.
-                        
-                        **Pros of this Architecture**:
-                        * **High Accuracy**: Ensemble methods (like the Random Forest Stacking technique) resolve inter-class ambiguities by learning from the collective strengths of four distinct neural networks.
-                        * **Explainability**: The integration of Grad-CAM ensures the model is not a "black box". Doctors can visually verify that the AI is analyzing pathological features (like borders and color asymmetry) rather than background noise.
-                        * **Mobile Deployment**: The architecture is designed with mobile endpoints in mind, utilizing lightweight models (MobileNetV2) for fast triage.
-                        
-                        **Cons & Limitations**:
-                        * **Compute Heavy**: The full Stacking Ensemble requires significant RAM to load four CNNs into memory.
-                        * **Clinical Data Vacuum**: The model currently operates purely on visual data, omitting critical patient metadata (Age, Sex, Anatomical Location) which would further improve diagnostic accuracy.
+                        **Please ensure:**
+                        * The image is a close-up dermatoscopic photograph of a skin lesion.
+                        * The image is well-lit and in focus.
+                        * The lesion is clearly visible and centered in the frame.
                         """)
+                    else:
+                        # 3. XAI Logic (Grad-CAM)
+                        processed_img, raw_array = engine.preprocess_image(image, available_models[0])
+                        heatmap = make_gradcam_heatmap(processed_img, xai_model)
+                        overlay = overlay_heatmap(raw_array, heatmap)
+                        
+                        # Results UI (Tabs)
+                        tab_diag, tab_prob, tab_xai, tab_impact = st.tabs(["Diagnosis", "Probabilities", "Explainability (Grad-CAM)", "Project Impact"])
+                        
+                        with tab_diag:
+                            pred_idx = np.argmax(probs)
+                            pred_class = CLASSES[pred_idx].upper()
+                            confidence = probs[pred_idx] * 100
+                            
+                            st.markdown(f"### Primary Diagnosis: **{pred_class}**")
+                            st.progress(int(confidence))
+                            st.markdown(f"**Confidence**: {confidence:.2f}%")
+                            
+                            if confidence < 75.0:
+                                st.warning("Low confidence prediction. Clinical correlation is strongly advised.")
+                                
+                        with tab_prob:
+                            df_probs = pd.DataFrame({'Class': [c.upper() for c in CLASSES], 'Probability': probs * 100})
+                            fig = px.bar(df_probs, x='Class', y='Probability', 
+                                         title="Class Probability Distribution",
+                                         labels={'Probability': 'Confidence (%)'},
+                                         color='Probability', color_continuous_scale='Blues')
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                        with tab_xai:
+                            st.markdown("### Gradient-weighted Class Activation Mapping (Grad-CAM)")
+                            st.markdown("The heatmap highlights the specific pixel regions the Convolutional Neural Network focused on to make its prediction. Red indicates high activation.")
+                            st.image(overlay, caption=f"Grad-CAM overlay", width=400)
+                            
+                        with tab_impact:
+                            st.markdown("### Project Context and Clinical Impact")
+                            st.markdown("""
+                            **The Problem Statement**
+                            Skin cancer is highly treatable if detected early, but dermatological expertise is not universally accessible. Furthermore, visual diagnosis of lesions like Melanoma vs. Atypical Nevi is highly complex, even for trained specialists.
+                            
+                            **The X-Skin Solution**
+                            This project utilizes advanced Deep Learning architectures to provide an automated, highly accurate "second opinion". By deploying advanced Ensemble Methods, the system drastically reduces the false-negative rate associated with single-model architectures.
+                            
+                            **Pros of this Architecture**:
+                            * **High Accuracy**: Ensemble methods (like the Random Forest Stacking technique) resolve inter-class ambiguities by learning from the collective strengths of four distinct neural networks.
+                            * **Explainability**: The integration of Grad-CAM ensures the model is not a "black box". Doctors can visually verify that the AI is analyzing pathological features (like borders and color asymmetry) rather than background noise.
+                            * **Mobile Deployment**: The architecture is designed with mobile endpoints in mind, utilizing lightweight models (MobileNetV2) for fast triage.
+                            
+                            **Cons & Limitations**:
+                            * **Compute Heavy**: The full Stacking Ensemble requires significant RAM to load four CNNs into memory.
+                            * **Clinical Data Vacuum**: The model currently operates purely on visual data, omitting critical patient metadata (Age, Sex, Anatomical Location) which would further improve diagnostic accuracy.
+                            """)
 
                 except Exception as e:
                     st.error(f"An error occurred during analysis: {str(e)}")

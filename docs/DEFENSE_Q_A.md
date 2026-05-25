@@ -1,0 +1,60 @@
+# Final Year Project Defense Q&A
+
+This document contains a curated list of difficult questions a defense committee might ask about the X-Skin project, along with professional, well-reasoned answers.
+
+---
+
+### Q1: Why did you choose these specific 4 CNN architectures?
+**Answer**: We wanted architectural diversity to maximize the effectiveness of our ensemble. 
+* **VGG16** provides a traditional, deep sequential baseline.
+* **ResNet50** utilizes skip connections (residual blocks) to capture very deep spatial hierarchies without vanishing gradients.
+* **MobileNetV2** uses depthwise separable convolutions, focusing on creating a lightweight, fast model for our mobile deployment goal.
+* **EfficientNetB0** uses compound scaling to provide the absolute highest accuracy per parameter.
+By combining models with fundamentally different ways of "seeing" the image, the ensemble can cover the blind spots of any single model.
+
+### Q2: The HAM10000 dataset is notoriously imbalanced (mostly Nevi). How did you handle this?
+**Answer**: We tackled class imbalance on two fronts:
+1. **At the data level**: We applied SMOTE (Synthetic Minority Over-sampling Technique) to algorithmically generate synthetic feature examples of the rare classes, ensuring the model had a balanced distribution to learn from.
+2. **At the algorithmic level**: We applied computed Class Weights to the Cross-Entropy loss function. If the model incorrectly guessed a rare class (like Dermatofibroma), the loss penalty was multiplied, forcing the optimizer to pay close attention to the minority classes rather than just guessing "Nevus" every time.
+
+### Q3: Your models struggled with the "AKIEC vs. MEL" and "MEL vs. NV" distinctions. Why does this happen, and how did you fix it?
+**Answer**: This confusion is actually clinically accurate. Early melanomas (MEL) often share macroscopic features with atypical nevi (NV), and actinic keratoses (AKIEC) can present as pigmented lesions mimicking melanoma. 
+To resolve this mathematically, we built a **Random Forest Stacking Ensemble**. Unlike standard soft-voting, the Random Forest acts as a Meta-Learner. It learned specific non-linear conditions—for example, if VGG16 is highly confident about MEL, but EfficientNet is certain it's NV, the Random Forest learns which model's "opinion" is historically more accurate for that specific feature combination. This specific technique boosted our AKIEC F1-score from 0.63 up to 0.70.
+
+### Q4: Why implement 4 different ensemble techniques instead of just taking the average?
+**Answer**: Standard averaging (Uniform Soft Voting) is brittle. If one model is poorly calibrated and outputs 99% confidence for the wrong answer, it ruins the average. We wanted to engineer robust solutions:
+* **Decoupled Weighted Voting**: Applies linear multipliers based on validation F1-scores, rewarding models only for the specific diseases they are good at detecting.
+* **Stacking (Meta-Learner)**: Learns complex non-linear corrections between the base models.
+* **Rank-Based Voting (Borda Count)**: Completely ignores probability percentages to neutralize overconfident models, looking only at the ordinal ranking of the predictions.
+* **Confidence-Gated Cascade**: An operational ensemble designed to simulate the battery/compute constraints of our ultimate Mobile App deployment goal.
+
+### Q5: How exactly does the Confidence-Gated Cascade work?
+**Answer**: Running all 4 models on a mobile phone simultaneously would drain the battery and cause massive latency. The Cascade solves this by acting as a filter. The image is processed instantly on the phone by our lightweight `MobileNetV2` model. If MobileNet's confidence exceeds a high threshold (e.g., 90%), we accept the result immediately. If it is uncertain, we escalate the image to a cloud server where the heavy Stacking Ensemble processes it. This allowed us to maintain 99% of our maximum accuracy while processing over 60% of images locally on the phone.
+
+### Q6: Deep Learning in healthcare faces scrutiny for being a "black box". How can a doctor trust your model?
+**Answer**: We integrated **Grad-CAM** (Gradient-weighted Class Activation Mapping) directly into our inference pipeline. Grad-CAM traces the gradients of the predicted class back to the final convolutional layer, producing a spatial heatmap of what the model was "looking at". If the model diagnoses Melanoma, the doctor can look at the heatmap. If the heatmap highlights the asymmetrical border of the lesion, the doctor knows the AI's reasoning aligns with dermatological science. If it highlights a ruler marking in the corner of the image, the doctor knows to disregard the prediction.
+
+### Q7: If you had 6 more months to work on this, what would you add?
+**Answer**: 
+1. **Patient Metadata**: We currently only use the image. Feeding patient age, sex, and anatomical location into the dense layers of the network (or directly into the Meta-Learner) would significantly boost accuracy, as diseases like BCC are highly correlated with age and sun-exposed areas.
+2. **Test-Time Augmentation (TTA)**: Passing the same image through the model 5 times at different rotations and averaging the result to increase robustness against poor camera angles.
+3. **ISIC 2019/2020 Extended Datasets**: Incorporating the larger ISIC 2019 and ISIC 2020 challenge datasets, which introduce additional diagnostic categories and a significantly greater volume of labelled dermatoscopic images, to further improve generalisation and reduce class-level confusion.
+
+### Q8: Your model predicts a diagnosis even when the input is not a skin image. How did you handle this?
+**Answer**: This is a fundamental limitation of the softmax activation function. Because softmax always produces probabilities that sum to 1.0, the model is mathematically forced to distribute 100% of its confidence across the seven known skin lesion classes, regardless of whether the input is actually a skin lesion. A photograph of a car, a pet, or a blank image will still receive a seemingly confident diagnosis.
+
+To address this, we implemented a **dual-gate Out-of-Distribution (OOD) Rejection mechanism** in the inference pipeline. Before any prediction is displayed to the user, the system evaluates two independent checks:
+
+1. **Confidence Threshold (50%)**: The system examines the highest predicted probability across all seven classes. If no single class exceeds 50%, the model has failed to identify a dominant candidate, and the input is rejected.
+2. **Shannon Entropy Check (threshold: 1.6)**: The system computes the Shannon Entropy of the probability distribution using H = -sum(p * log(p)). A uniform distribution over 7 classes yields the theoretical maximum entropy of log(7) = 1.946. If the computed entropy exceeds 1.6, the model's uncertainty is dangerously close to a random guess, and the input is rejected.
+
+Both conditions must be satisfied for a prediction to be accepted. When rejection triggers, the user sees a red error banner reading "Image Rejected: Not a Valid Dermatoscopic Skin Lesion" along with guidance to upload a properly captured dermatoscopic image. No diagnosis, confidence score, or Grad-CAM heatmap is shown.
+
+### Q9: Why did you choose Shannon Entropy over other uncertainty measures?
+**Answer**: Shannon Entropy is a well-established information-theoretic measure with several properties that make it particularly suitable for this application.
+
+First, it captures the entire "spread" of a probability distribution in a single scalar value, making it computationally trivial to evaluate at inference time. A confident prediction, where one class dominates, produces low entropy (approaching 0.0). A confused prediction, where probability mass is spread roughly equally across all classes, produces high entropy (approaching the theoretical maximum of log(7) = 1.946 for our seven-class problem).
+
+Second, unlike simpler alternatives such as using only the maximum predicted probability, entropy considers the shape of the entire distribution. Two predictions might both have a maximum confidence of 55%, but one could concentrate the remaining 45% on a single alternative class (low entropy, relatively confident), while the other spreads it evenly across all six remaining classes (high entropy, genuinely confused). Entropy distinguishes between these two cases in a way that a single confidence threshold alone cannot.
+
+The threshold of 1.6 was selected because it provides a meaningful margin below the theoretical maximum of 1.946. Distributions exceeding this threshold are sufficiently close to uniform randomness that accepting them as valid clinical predictions would be irresponsible.

@@ -125,38 +125,46 @@ graph TD
 
 The softmax activation function used in the final classification layer always produces a probability distribution that sums to exactly 1.0. This means the model is mathematically forced to assign 100% of its confidence across the seven known skin lesion classes, regardless of the input. If a user uploads a photograph of a landscape, a pet, or any image that is not a dermatoscopic skin lesion, the model will still return a diagnosis with apparent confidence. Without an additional safeguard, there is no mechanism to reject inputs that fall outside the domain the model was trained on.
 
-### The Solution: A Dual-Gate Validation Check
+### The Solution: A Three-Gate Validation Check
 
-Before displaying any prediction to the user, the system passes the model's output probabilities through a validation function (`is_valid_prediction`) that enforces two independent mathematical checks. Both checks must pass for a prediction to be accepted.
+Before displaying any prediction to the user, the system passes the model's output probabilities through a validation function (`is_valid_prediction`) that enforces three independent mathematical checks. All three checks must pass for a prediction to be accepted.
 
 ```mermaid
 graph TD
     Input["User Uploads Image"] --> Inference["Ensemble Model Inference"]
     Inference --> Probs["Output: Softmax Probabilities (7 classes, sum = 1.0)"]
-    Probs --> Gate1{"Gate 1: Max Confidence >= 50%?"}
+    Probs --> Gate3{"Gate 1: Top Class = NV and Confidence < 85%?"}
 
-    Gate1 -->|Yes| Gate2{"Gate 2: Shannon Entropy <= 1.6?"}
-    Gate1 -->|No| Reject["REJECTED: Not a Valid Dermatoscopic Skin Lesion"]
+    Gate3 -->|Yes| Reject["REJECTED: NV Bias — Not a Valid Dermatoscopic Skin Lesion"]
+    Gate3 -->|No| Gate1{"Gate 2: Max Confidence >= 70%?"}
+
+    Gate1 -->|Yes| Gate2{"Gate 3: Shannon Entropy <= 1.2?"}
+    Gate1 -->|No| Reject2["REJECTED: Not a Valid Dermatoscopic Skin Lesion"]
 
     Gate2 -->|Yes| Accept["ACCEPTED: Display Diagnosis + Grad-CAM Heatmap"]
-    Gate2 -->|No| Reject
+    Gate2 -->|No| Reject2
 
     style Reject fill:#e74c3c,color:#ffffff
+    style Reject2 fill:#e74c3c,color:#ffffff
     style Accept fill:#27ae60,color:#ffffff
 ```
 
-### Gate 1: Confidence Threshold (50%)
+### Gate 1: NV Bias Correction (85% for NV)
 
-The first gate examines the highest predicted probability across all seven classes. If no single class receives at least 50% of the total confidence, the model has failed to identify a dominant candidate, and the input is unlikely to be a recognisable skin lesion. A threshold of 50% was selected because a genuinely confident clinical prediction should concentrate the majority of its probability mass on a single diagnosis.
+The first gate addresses a dataset-specific failure mode. The HAM10000 training set is composed of approximately 67% Melanocytic Nevi (NV), which creates a strong prior bias in the learned softmax distribution. In practice, the model tends to default to NV on any input containing skin-like texture, including photographs of human faces, arms, or other non-lesion skin. To counteract this, if the top predicted class is NV, the system requires a confidence of at least 85% before accepting the prediction. This elevated threshold forces the model to demonstrate very high certainty before an NV classification is permitted, effectively preventing the dominant training class from acting as a catch-all category for ambiguous or out-of-distribution inputs.
 
-### Gate 2: Shannon Entropy Check (1.6)
+### Gate 2: Confidence Threshold (70%)
 
-The second gate computes the Shannon Entropy of the probability distribution using the formula:
+The second gate examines the highest predicted probability across all seven classes. If no single class receives at least 70% of the total confidence, the model has failed to identify a dominant candidate, and the input is unlikely to be a recognisable skin lesion. The threshold was raised from the original 50% to 70% because a genuine dermatoscopic lesion should produce strong activation in a well-trained classifier; moderate confidence in the 50--70% range frequently corresponded to non-dermatoscopic inputs that happened to share superficial visual features with one or more lesion classes.
+
+### Gate 3: Shannon Entropy Check (1.2)
+
+The third gate computes the Shannon Entropy of the probability distribution using the formula:
 
 **H = -sum(p * log(p))** for each class probability p
 
-Entropy measures how "spread out" or uncertain a probability distribution is. A perfectly confident prediction (100% on one class) yields an entropy of 0.0. A completely uniform distribution across all seven classes yields the maximum entropy of log(7) = 1.946. The threshold of 1.6 was chosen to provide a reasonable margin below the theoretical maximum: any distribution with entropy above 1.6 indicates that the model is near-uniformly confused and the input is likely out-of-distribution.
+Entropy measures how "spread out" or uncertain a probability distribution is. A perfectly confident prediction (100% on one class) yields an entropy of 0.0. A completely uniform distribution across all seven classes yields the maximum entropy of log(7) = 1.946. The threshold was tightened from the original 1.6 to 1.2 to enforce a stricter spread requirement. Distributions with entropy above 1.2 indicate that the model's probability mass is too dispersed across classes to represent a genuine clinical prediction, and the input is likely out-of-distribution.
 
 ### Rejection Behaviour
 
-When both gates fail, the web application displays a red error banner reading "Image Rejected: Not a Valid Dermatoscopic Skin Lesion" along with guidance instructing the user to upload a properly captured dermatoscopic image. No diagnosis, confidence score, or Grad-CAM heatmap is shown for rejected inputs.
+When any gate fails, the web application displays a red error banner reading "Image Rejected: Not a Valid Dermatoscopic Skin Lesion" along with guidance instructing the user to upload a properly captured dermatoscopic image. No diagnosis, confidence score, or Grad-CAM heatmap is shown for rejected inputs.

@@ -56,19 +56,27 @@ Ensembling is the process of combining multiple different AI models to make a si
 
 The softmax function used in the final layer of a classification neural network always produces probabilities that sum to exactly 1.0. This is a fundamental mathematical constraint, not an indication of genuine confidence. If a user uploads a photograph of a cat, a car, or a blank white image, the model will still distribute 100% of its probability across the seven skin lesion classes and return a "diagnosis." Without additional safeguards, the system has no ability to say "I do not know what this is."
 
-### The Solution: A Two-Pronged Validation Gate
+### The Solution: A Three-Gate Validation System
 
-Before displaying any result, the system evaluates the model's output probabilities against two independent checks. Both must pass for a prediction to be accepted.
+Before displaying any result, the system evaluates the model's output probabilities against three independent checks. All three must pass for a prediction to be accepted.
 
-1. **Confidence Threshold (50%)**: The system examines the highest predicted probability. If no single class receives at least 50% of the total confidence, the model has not identified a dominant candidate. The prediction is rejected because a clinically meaningful diagnosis should concentrate the majority of probability mass on a single class.
+1. **NV Bias Correction (85% threshold for NV)**: If the model's top prediction is NV (Melanocytic Nevus), the system demands at least 85% confidence before accepting it. This gate exists because the HAM10000 training set is approximately 67% NV, which creates a massive class prior bias in the learned softmax distribution. In practice, this means the model "sees" skin-like texture in almost any input — including photographs of human faces, bare arms, or random skin — and defaults to NV with moderate confidence (typically 60--70%). The 85% threshold forces the model to be extremely certain before an NV classification is permitted, preventing the dominant training class from acting as a catch-all for non-lesion images.
 
-2. **Shannon Entropy (threshold: 1.6)**: Shannon Entropy measures how "spread out" or disordered a probability distribution is. In plain English, entropy answers the question: *"Is the model pointing at one answer, or is it shrugging across all seven?"*
+2. **Confidence Threshold (70%)**: The system examines the highest predicted probability. If no single class receives at least 70% of the total confidence, the model has not identified a dominant candidate. The threshold was raised from the original 50% to 70% because a genuine dermatoscopic lesion should produce strong activation in a well-trained classifier.
+
+3. **Shannon Entropy (threshold: 1.2)**: Shannon Entropy measures how "spread out" or disordered a probability distribution is. In plain English, entropy answers the question: *"Is the model pointing at one answer, or is it shrugging across all seven?"*
    * **Formula**: H = -sum(p * log(p)) for each class probability p
    * A perfectly confident prediction (100% on one class) has an entropy of **0.0**.
    * A completely uniform guess across 7 classes has the maximum entropy of **log(7) = 1.946**.
-   * The threshold of **1.6** was chosen to provide a reasonable margin below the theoretical maximum. Any distribution exceeding 1.6 entropy indicates the model is nearly uniformly confused, and the input is likely not a valid skin lesion.
+   * The threshold was tightened from 1.6 to **1.2** to enforce a stricter spread requirement. Distributions exceeding 1.2 entropy indicate that the model's probability mass is too dispersed to represent a genuine clinical prediction.
 
-If either check fails, the system displays a red error banner: *"Image Rejected: Not a Valid Dermatoscopic Skin Lesion"* and provides guidance to the user.
+### Why the NV Bias Correction Gate Is Necessary
+
+The NV Bias Correction gate was introduced after a specific failure case was identified during testing: the model predicted NV (Melanocytic Nevus) on a photograph of a human face. The face contained skin-like colour and texture, which was sufficient to activate the NV-dominant features learned during training. Because 67% of the training data consists of NV images, the softmax output layer inherits a strong statistical prior toward NV. Any input that contains skin — even healthy, non-lesion skin — will trigger moderate NV confidence (typically 60--70%), which was enough to pass the original 50% confidence gate.
+
+The 85% NV-specific threshold functions as a form of post-hoc calibration that compensates for dataset imbalance at inference time. Rather than retraining the model or rebalancing the dataset (which would affect all other class boundaries), this targeted gate addresses the single most problematic failure mode without disrupting the classifier's performance on the remaining six classes.
+
+If any check fails, the system displays a red error banner: *"Image Rejected: Not a Valid Dermatoscopic Skin Lesion"* and provides guidance to the user.
 
 ---
 

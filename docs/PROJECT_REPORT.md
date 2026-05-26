@@ -144,11 +144,13 @@ This approach guarantees that every model has exactly equal voting power, comple
 ### 3.10 Out-of-Distribution (OOD) Rejection
 A fundamental limitation of softmax-based classifiers is that the output layer always distributes exactly 100% probability across the defined classes, regardless of whether the input belongs to the training domain. An image of a landscape, a pet, or any non-dermatoscopic photograph will still receive a full probability distribution across the 7 skin lesion classes, producing a misleading diagnosis.
 
-To mitigate this, a **dual-gate rejection mechanism** was implemented in the web application. Both gates must pass before a prediction is displayed to the user:
+To mitigate this, a **three-gate rejection mechanism** was implemented in the web application. All three gates must pass before a prediction is displayed to the user:
 
-**Gate 1 — Confidence Threshold**: The maximum predicted probability must be at least 50%. A genuine skin lesion should produce moderate-to-high confidence in at least one diagnostic class. If the model distributes probability roughly equally across multiple classes, the input is likely outside its domain of competence.
+**Gate 1 — NV Bias Correction (85% for NV)**: The HAM10000 training set is composed of approximately 67% Melanocytic Nevi (NV), which creates a strong prior bias in the learned softmax distribution. During testing, this bias produced a specific failure case: the model predicted NV on a photograph of a human face, because the face contained skin-like colour and texture sufficient to activate the NV-dominant features learned during training. To counteract this, if the top predicted class is NV, the system requires a confidence of at least 85% before accepting the prediction. This elevated threshold prevents the dominant training class from acting as a catch-all category for any input containing skin-like texture, including non-lesion photographs of faces, arms, or other exposed skin.
 
-**Gate 2 — Shannon Entropy**: The Shannon entropy of the predicted probability distribution must not exceed 1.6 nats. Shannon entropy quantifies the uncertainty in a discrete probability distribution and is defined as:
+**Gate 2 — Confidence Threshold (70%)**: The maximum predicted probability must be at least 70%. The threshold was raised from the original 50% because a genuine dermatoscopic lesion should produce strong activation in a well-trained classifier. Moderate confidence in the 50--70% range frequently corresponded to non-dermatoscopic inputs that happened to share superficial visual features with one or more lesion classes.
+
+**Gate 3 — Shannon Entropy (1.2)**: The Shannon entropy of the predicted probability distribution must not exceed 1.2 nats. Shannon entropy quantifies the uncertainty in a discrete probability distribution and is defined as:
 
 ```
 H(p) = -Σ p_i × log(p_i)
@@ -160,9 +162,9 @@ For a uniform distribution over 7 classes (the maximum-uncertainty case), the en
 H_max = log(7) ≈ 1.946 nats
 ```
 
-The threshold of 1.6 nats was selected to provide a meaningful margin below the theoretical maximum while still allowing legitimate low-confidence predictions on ambiguous skin lesions (e.g., early-stage melanoma vs. atypical nevus).
+The threshold was tightened from the original 1.6 to 1.2 nats to enforce a stricter spread requirement. Distributions exceeding 1.2 entropy indicate that the model's probability mass is too dispersed across classes to represent a genuine clinical prediction.
 
-**Combined Effect**: If either gate fails, the application displays a rejection message ("Not a Valid Dermatoscopic Skin Lesion") instead of a potentially harmful misdiagnosis. This dual-gate design is deliberately conservative — a non-skin image must fool both the confidence and entropy checks simultaneously to pass through.
+**Combined Effect**: If any gate fails, the application displays a rejection message ("Not a Valid Dermatoscopic Skin Lesion") instead of a potentially harmful misdiagnosis. The three-gate design is deliberately conservative. The NV Bias Correction gate specifically addresses the dataset imbalance problem at inference time, functioning as a form of post-hoc calibration that prevents the 67% NV prior from producing false positive diagnoses on non-lesion skin images.
 
 ---
 

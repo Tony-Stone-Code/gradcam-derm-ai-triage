@@ -144,18 +144,20 @@ for each class:
 
 ## Enhancement 10: Out-of-Distribution (OOD) Rejection Gate
 **Date**: 2026-05-25
+**Updated**: 2026-05-26 — Tightened thresholds and added NV Bias Correction gate (see below)
 **Impact**: Prevents misleading diagnoses on non-dermatoscopic input images
 
-**Problem**: The softmax output layer always distributes exactly 100% probability across the 7 classes, regardless of whether the input image is a skin lesion or an unrelated photograph (e.g., a landscape, a pet, a selfie). This means the model will always return a diagnosis, even when the input is completely outside its training domain.
+**Problem**: The softmax output layer always distributes exactly 100% probability across the 7 classes, regardless of whether the input image is a skin lesion or an unrelated photograph (e.g., a landscape, a pet, a selfie). This means the model will always return a diagnosis, even when the input is completely outside its training domain. Additionally, the model was observed to predict NV (Melanocytic Nevus) on photographs of human faces because the HAM10000 dataset is 67% NV, creating a strong prior bias toward that class on any skin-like texture.
 
-**Fix**: Implemented a **dual-gate validation** mechanism in `app.py` via the `is_valid_prediction()` function. Both gates must pass for the prediction to be displayed:
+**Fix**: Implemented a **three-gate validation** mechanism in `app.py` via the `is_valid_prediction()` function. All three gates must pass for the prediction to be displayed:
 
 | Gate | Condition | Threshold | Rationale |
 |---|---|---|---|
-| Confidence | `max(probabilities) >= 0.50` | 50% | A genuine skin lesion should produce at least moderate confidence in one class |
-| Shannon Entropy | `H(p) <= 1.6` | 1.6 nats | Uniform distribution over 7 classes gives `H = log(7) ≈ 1.946`; threshold of 1.6 provides margin |
+| NV Bias Correction | If top class = NV: `max(probabilities) >= 0.85` | 85% | 67% of training data is NV; model defaults to NV on any skin-like texture (faces, arms). Elevated threshold prevents this. |
+| Confidence | `max(probabilities) >= 0.70` | 70% | Raised from 50%. A genuine dermatoscopic lesion should produce strong activation. |
+| Shannon Entropy | `H(p) <= 1.2` | 1.2 nats | Tightened from 1.6. Uniform distribution gives `H = log(7) ≈ 1.946`; stricter threshold filters confused predictions. |
 
-**Result**: Non-skin images now receive a clear rejection message ("Not a Valid Dermatoscopic Skin Lesion") instead of a spurious diagnosis.
+**Result**: Non-skin images now receive a clear rejection message ("Not a Valid Dermatoscopic Skin Lesion") instead of a spurious diagnosis. The NV Bias Correction gate specifically prevents the model from classifying human faces and non-lesion skin photographs as Melanocytic Nevi.
 
 ---
 

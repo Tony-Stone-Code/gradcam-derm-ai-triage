@@ -35,13 +35,28 @@ def load_engine():
 engine, available_models, has_rf = load_engine()
 
 # OOD Rejection Thresholds
-CONFIDENCE_THRESHOLD = 0.50  # Minimum top-class probability
-ENTROPY_THRESHOLD = 1.6      # Maximum allowed entropy (uniform over 7 classes = 1.946)
+CONFIDENCE_THRESHOLD = 0.70       # Minimum top-class probability
+ENTROPY_THRESHOLD = 1.2           # Maximum allowed entropy (uniform over 7 classes = 1.946)
+NV_CONFIDENCE_THRESHOLD = 0.85    # Higher bar for NV since the model defaults to it on any skin-like texture
 
 def is_valid_prediction(probs):
-    """Check if the prediction looks like a genuine skin lesion or random noise."""
+    """Check if the prediction looks like a genuine skin lesion or random noise.
+    
+    Uses three gates:
+    1. Confidence Gate: max probability must exceed 70%
+    2. Entropy Gate: Shannon entropy must be below 1.2 (low spread)
+    3. NV Bias Gate: if the top prediction is NV (the dominant training class),
+       require 85% confidence to prevent the model from defaulting to NV
+       on non-dermatoscopic images (e.g., faces, random objects)
+    """
     max_conf = np.max(probs)
+    pred_idx = np.argmax(probs)
     entropy = -np.sum(probs * np.log(probs + 1e-10))
+    
+    # Gate 3: NV bias correction
+    if CLASSES[pred_idx] == 'nv' and max_conf < NV_CONFIDENCE_THRESHOLD:
+        return False, max_conf, entropy
+    
     return max_conf >= CONFIDENCE_THRESHOLD and entropy <= ENTROPY_THRESHOLD, max_conf, entropy
 
 # Sidebar: Navigation & Author Info
